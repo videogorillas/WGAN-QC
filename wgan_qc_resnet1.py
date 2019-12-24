@@ -15,6 +15,7 @@ import torch.autograd as autograd
 import os
 import shutil
 from glob import *
+from torchsummary import summary
 
 from cvxopt import matrix, spmatrix, sparse, solvers
 import numpy as np
@@ -22,12 +23,12 @@ from copy import deepcopy
 
 import models.resnet1 as resnet
 
-
 ####################################################################################
 # WGAN-QC (Wasserstein GANs with Quadratic Transport Cost)
 # Code is adopted from WGAN and modified by Huidong Liu (Hui-Dong Liu)
 # Email: huidliu@cs.stonybrook.edu; h.d.liew@gmail.com
 ####################################################################################
+from axfdataset import AXFTextureDataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', required=True, help='mnist | cifar10 | lsun | imagenet | folder | lfw | others')
@@ -40,8 +41,8 @@ parser.add_argument('--ngf', type=int, default=64)
 parser.add_argument('--ndf', type=int, default=64)
 parser.add_argument('--ngf_max', type=int, default=512)
 parser.add_argument('--ndf_max', type=int, default=512)
-parser.add_argument('--K', type=float, default=-1.0, help='the coef in transport cost, <=0 meaning K = 1/dim') 
-parser.add_argument('--res_ratio', type=float, default=0.1, help='resnet block ratio') 
+parser.add_argument('--K', type=float, default=-1.0, help='the coef in transport cost, <=0 meaning K = 1/dim')
+parser.add_argument('--res_ratio', type=float, default=0.1, help='resnet block ratio')
 parser.add_argument('--epochs', type=int, default=2000, help='number of epochs for training')
 parser.add_argument('--epoch', type=int, default=1, help='starting epoch (to continue training)')
 parser.add_argument('--Giters', type=int, default=500000, help='number of Generator iterations, default=50k')
@@ -66,11 +67,11 @@ parser.add_argument('--DOptIters', type=int, default=1, help='number of iters of
 parser.add_argument('--output_dir', default=None, help='folder to store output samples and checkpoints')
 parser.add_argument('--RMSprop', action='store_true', help='Whether to use RMSprop (default is Adam)')
 parser.add_argument('--Adagrad', action='store_true', help='Whether to use Adagrad (default is Adam)')
-parser.add_argument('--IS_freq', type=int, default=10000, help='IS evaluation frequency if IS is activated') 
+parser.add_argument('--IS_freq', type=int, default=10000, help='IS evaluation frequency if IS is activated')
 parser.add_argument('--FID_freq', type=int, default=10000, help='FID evaluation frequency if FID is activated')
 parser.add_argument('--verbose_freq', type=int, default=10, help='verbose frequency')
-parser.add_argument('--genImg_num', type=int, default=64, help='number of generated images') 
-parser.add_argument('--genImg_freq', type=int, default=500, help='generate image frequency') 
+parser.add_argument('--genImg_num', type=int, default=64, help='number of generated images')
+parser.add_argument('--genImg_freq', type=int, default=500, help='generate image frequency')
 parser.add_argument('--save_ckpt_freq', type=int, default=10000, help='save checkpoint frequency')
 parser.add_argument('--save_ckpt_epoch_freq', type=int, default=10, help='save checkpoint in how many epochs')
 
@@ -132,7 +133,7 @@ log_fileName = '{0}/log.txt'.format(output_dir)
 with open(log_fileName, 'a') as f:
     f.write('\n{}\n'.format(str(args)))
 
-args.manualSeed = random.randint(1, 10000)  
+args.manualSeed = random.randint(1, 10000)
 print("Random Seed: ", args.manualSeed)
 random.seed(args.manualSeed)
 torch.manual_seed(args.manualSeed)
@@ -151,25 +152,26 @@ if args.RMSprop:
 if args.Adagrad:
     Optimizer = 'Adagrad'
 
-    
-class CenterCropLongEdge(object):
-  """Crops the given PIL Image on the long edge.
-  Args:
-      size (sequence or int): Desired output size of the crop. If size is an
-          int instead of sequence like (h, w), a square crop (size, size) is
-          made.
-  """
-  def __call__(self, img):
-    """
-    Args:
-        img (PIL Image): Image to be cropped.
-    Returns:
-        PIL Image: Cropped image.
-    """
-    return transforms.functional.center_crop(img, min(img.size))
 
-  def __repr__(self):
-    return self.__class__.__name__
+class CenterCropLongEdge(object):
+    """Crops the given PIL Image on the long edge.
+    Args:
+        size (sequence or int): Desired output size of the crop. If size is an
+            int instead of sequence like (h, w), a square crop (size, size) is
+            made.
+    """
+
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL Image): Image to be cropped.
+        Returns:
+            PIL Image: Cropped image.
+        """
+        return transforms.functional.center_crop(img, min(img.size))
+
+    def __repr__(self):
+        return self.__class__.__name__
 
 
 if args.dataset in ['imagenet', 'folder', 'lfw']:
@@ -182,6 +184,9 @@ if args.dataset in ['imagenet', 'folder', 'lfw']:
                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                                ]))
     nc = 3
+elif args.dataset == 'axf':
+    dataset = AXFTextureDataset(args.dataroot, image_size=args.imageSize)
+    nc = 11
 elif args.dataset == 'lsun':
     dataset = dset.LSUN(root=args.dataroot, classes=['bedroom_train'],
                         transform=transforms.Compose([
@@ -198,27 +203,27 @@ elif args.dataset == 'cifar10':
                                transforms.ToTensor(),
                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ])
-    )
+                           )
     nc = 3
 elif args.dataset == 'mnist':
     dataset = dset.MNIST(root=args.dataroot,
-                         train=True, # download=True,
+                         train=True,  # download=True,
                          transform=transforms.Compose([
-                            transforms.Resize(args.imageSize),
-                            transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                             transforms.Resize(args.imageSize),
+                             transforms.ToTensor(),
+                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                          ])
-    )
+                         )
     nc = 1
 else:
-   dataset = dset.ImageFolder(root=args.dataroot,
-                         transform=transforms.Compose([
-                            transforms.Resize(args.imageSize),
-                            transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                         ])
-    )
-   nc = 3
+    dataset = dset.ImageFolder(root=args.dataroot,
+                               transform=transforms.Compose([
+                                   transforms.Resize(args.imageSize),
+                                   transforms.ToTensor(),
+                                   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                               ])
+                               )
+    nc = 3
 
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batchSize,
@@ -245,13 +250,16 @@ def weights_init_G(m):
         nn.init.constant_(m.bias, 0)
 
 
-netG = resnet.ResNet_G(nz, args.imageSize, nfilter=ngf, nfilter_max=ngf_max, res_ratio=res_ratio)
-netD = resnet.ResNet_D(nz, args.imageSize, nfilter=ndf, nfilter_max=ndf_max, res_ratio=res_ratio)
+netG = resnet.ResNet_G((4, 8, 8), args.imageSize, nfilter=ngf, nfilter_max=ngf_max, res_ratio=res_ratio, outchannels=nc)
+netD = resnet.ResNet_D(args.imageSize, nfilter=ndf, nfilter_max=ndf_max, res_ratio=res_ratio, inchannels=nc)
+
+summary(netG, input_size=(4, 8, 8), batch_size=args.batchSize, device="cpu")
+summary(netD, input_size=(nc, args.imageSize, args.imageSize), batch_size=args.batchSize, device="cpu")
 
 if torch.cuda.device_count() > 1:
-  print("use", torch.cuda.device_count(), "GPUs!")
-  netG = nn.DataParallel(netG)
-  netD = nn.DataParallel(netD)
+    print("use", torch.cuda.device_count(), "GPUs!")
+    netG = nn.DataParallel(netG)
+    netD = nn.DataParallel(netD)
 
 netG.apply(weights_init_G)
 if args.netG != '':  # load checkpoint if needed
@@ -273,7 +281,7 @@ if K <= 0:
 Kr = np.sqrt(K)
 LAMBDA = 2 * Kr * gamma * 2
 real = torch.FloatTensor(batchSize, nc, args.imageSize, args.imageSize).to(device)
-noise = torch.FloatTensor(batchSize, nz, 1, 1).to(device)
+noise = torch.FloatTensor(batchSize, 4, 8, 8).to(device)
 one = torch.FloatTensor([1])
 mone = one * -1
 ones = torch.ones(batchSize)
@@ -287,13 +295,13 @@ criterion = torch.nn.MSELoss()
 def build_optimizerD(Optimizer='Adam'):
     # build optimizer
     if Optimizer == 'RMSprop':
-        optimizerD = optim.RMSprop(netD.parameters(), lr = args.lrD)
+        optimizerD = optim.RMSprop(netD.parameters(), lr=args.lrD)
     elif Optimizer == 'Adam':
         optimizerD = optim.Adam(netD.parameters(), lr=args.lrD, betas=(args.beta1, args.beta2))
     elif Optimizer == 'Adagrad':
         optimizerD = optim.Adagrad(netD.parameters(), lr=args.lrD)
     else:
-        optimizerD = optim.RMSprop(netD.parameters(), lr = args.lrD)
+        optimizerD = optim.RMSprop(netD.parameters(), lr=args.lrD)
 
     return optimizerD
 
@@ -319,7 +327,8 @@ def build_lr_scheduler(optimizer, milestones, lr_anneal, last_epoch=-1):
 
 def load_last_checkpoint(netD, netG, checkpoint_path):
     checkpoints = glob('{}/*.pth'.format(checkpoint_path))
-    checkpoint_ids = [(int(f.split('_')[2]), int(f.split('_')[4]), f) for f in [p.split('/')[-1].split('.')[0] for p in checkpoints]]
+    checkpoint_ids = [(int(f.split('_')[2]), int(f.split('_')[4]), f) for f in
+                      [p.split('/')[-1].split('.')[0] for p in checkpoints]]
     if not checkpoint_ids:
         epoch = 1
         Giter = 1
@@ -340,25 +349,27 @@ def load_last_checkpoint(netD, netG, checkpoint_path):
 solvers.options['show_progress'] = False
 solvers.options['glpk'] = {'msg_lev': 'GLP_MSG_OFF'}
 
-A = spmatrix(1.0, range(batchSize), [0]*batchSize, (batchSize,batchSize))
-for i in range(1,batchSize):
-    Ai = spmatrix(1.0, range(batchSize), [i]*batchSize, (batchSize,batchSize))
-    A = sparse([A,Ai])
+A = spmatrix(1.0, range(batchSize), [0] * batchSize, (batchSize, batchSize))
+for i in range(1, batchSize):
+    Ai = spmatrix(1.0, range(batchSize), [i] * batchSize, (batchSize, batchSize))
+    A = sparse([A, Ai])
 
-D = spmatrix(-1.0, range(batchSize), range(batchSize), (batchSize,batchSize))
+D = spmatrix(-1.0, range(batchSize), range(batchSize), (batchSize, batchSize))
 DM = D
-for i in range(1,batchSize):
+for i in range(1, batchSize):
     DM = sparse([DM, D])
 
-A = sparse([[A],[DM]])
+A = sparse([[A], [DM]])
 
-cr = matrix([-1.0/batchSize]*batchSize)
-cf = matrix([1.0/batchSize]*batchSize)
-c = matrix([cr,cf])
+cr = matrix([-1.0 / batchSize] * batchSize)
+cf = matrix([1.0 / batchSize] * batchSize)
+c = matrix([cr, cf])
 
 pStart = {}
-pStart['x'] = matrix([matrix([1.0]*batchSize),matrix([-1.0]*batchSize)])
-pStart['s'] = matrix([1.0]*(2*batchSize))
+pStart['x'] = matrix([matrix([1.0] * batchSize), matrix([-1.0] * batchSize)])
+pStart['s'] = matrix([1.0] * (2 * batchSize))
+
+
 ###############################################################################
 
 
@@ -368,7 +379,7 @@ def read_data(data_iter, batch_id):
     real_cpu, _ = data
     real_data = real_cpu.clone().to(device)
     real.resize_as_(real_data).copy_(real_data)
-    noise.resize_(batchSize, nz, 1, 1).normal_(0, 1)
+    noise.normal_(0, 1)
     with torch.no_grad():
         fake = netG(noise).detach()
 
@@ -409,7 +420,7 @@ def approx_OT(sol):
 
     ResMat = np.array(sol['z']).reshape((batchSize, batchSize))
     mapping = torch.from_numpy(np.argmax(ResMat, axis=0)).long().to(device)
-    
+
     return mapping
     ###########################################################################
 
@@ -425,8 +436,9 @@ def OT_regularization(output_fake, fake, RF_dif):
     gradients = autograd.grad(outputs=output_fake, inputs=fake,
                               grad_outputs=output_fake_grad,
                               create_graph=True, retain_graph=True, only_inputs=True)[0]
-    n = gradients.size(0)    
-    RegLoss = 0.5 * ((gradients.view(n, -1).norm(dim=1) / (2*Kr) - Kr/2 * RF_dif.view(n, -1).norm(dim=1)).pow(2)).mean()
+    n = gradients.size(0)
+    RegLoss = 0.5 * (
+        (gradients.view(n, -1).norm(dim=1) / (2 * Kr) - Kr / 2 * RF_dif.view(n, -1).norm(dim=1)).pow(2)).mean()
     fake.requires_grad = False
 
     return RegLoss
@@ -437,16 +449,16 @@ def update_average(model_tgt, model_src, beta):
         param_dict_src = dict(model_src.named_parameters())
         for p_name, p_tgt in model_tgt.named_parameters():
             p_src = param_dict_src[p_name]
-            assert(p_src is not p_tgt)
-            p_tgt.data.copy_(beta*p_tgt.data + (1. - beta)*p_src.data)
+            assert (p_src is not p_tgt)
+            p_tgt.data.copy_(beta * p_tgt.data + (1. - beta) * p_src.data)
 
-            
+
 def load_fixed_noise(img_path, device):
     file_name = '{0}/fixed_noise.pth'.format(img_path)
     if os.path.isfile(file_name):
         fixed_noise = torch.load(file_name, map_location=torch.device('cpu'))
     else:
-        fixed_noise = torch.FloatTensor(genImg_num, nz, 1, 1).normal_(0, 1)
+        fixed_noise = torch.FloatTensor(genImg_num, 4, 8, 8).normal_(0, 1)
         torch.save(fixed_noise, file_name)
 
     return fixed_noise.to(device)
@@ -459,12 +471,25 @@ def save_checkpoint(checkpoint_path, epoch, Giter):
 
 def save_images(img_path, real_cpu):
     real_cpu = real_cpu[:genImg_num].mul(0.5).add(0.5)
-    vutils.save_image(real_cpu, '{0}/real_samples.png'.format(img_path), nrow=genImg_num_sroot)
+    b, c, h, w = real_cpu.shape
+    if c == 11:
+        for _range, name in zip(dataset.layerRanges, dataset.layerKeys):
+            _real_cpu = real_cpu[:, list(range(*_range)), :, :]
+            vutils.save_image(_real_cpu, f'{img_path}/real_samples_{name}.png', nrow=genImg_num_sroot)
+    else:
+        vutils.save_image(real_cpu, '{0}/real_samples.png'.format(img_path), nrow=genImg_num_sroot)
+
     netG_test.eval()
     with torch.no_grad():
         fake = netG_test(fixed_noise)
     fake.data = fake.cpu().data.mul(0.5).add(0.5)
-    vutils.save_image(fake.data, '{0}/fake_samples_{1}.png'.format(img_path, Giter), nrow=genImg_num_sroot)
+
+    if c == 11:
+        for _range, name in zip(dataset.layerRanges, dataset.layerKeys):
+            _fake_data = fake.data[:, list(range(*_range)), :, :]
+            vutils.save_image(_fake_data, f'{img_path}/fake_samples_{name}_{Giter}.png', nrow=genImg_num_sroot)
+    else:
+        vutils.save_image(fake.data, '{0}/fake_samples_{1}.png'.format(img_path, Giter), nrow=genImg_num_sroot)
 
 
 fixed_noise = load_fixed_noise(img_path, device)
@@ -478,7 +503,7 @@ epoch, Giter = load_last_checkpoint(netD, netG, checkpoint_path)
 WD = torch.FloatTensor(1)
 
 if lr_anneal != 1.0:
-    for i in range(Giter-1):
+    for i in range(Giter - 1):
         schedulerD.step()
         schedulerG.step()
 
@@ -513,7 +538,6 @@ while epoch <= epochs and Giter <= Giters:
             epoch += 1
 
         real, fake, real_cpu, noise, batch_id = read_data(data_iter, batch_id)
-
         dist = comput_dist(real, fake)
         dist = K * dist
         sol = Wasserstein_LP(dist)
@@ -539,7 +563,7 @@ while epoch <= epochs and Giter <= Giters:
 
             L2LossD_real = criterion(output_R_mean[0], target[:batchSize].mean())
             L2LossD_fake = criterion(output_fake, target[batchSize:])
-            L2LossD = 0.5 * L2LossD_real + 0.5 * L2LossD_fake 
+            L2LossD = 0.5 * L2LossD_real + 0.5 * L2LossD_fake
 
             if LAMBDA > 0:
                 RegLossD = OT_regularization(output_fake, fake, RF_dif)
@@ -579,7 +603,7 @@ while epoch <= epochs and Giter <= Giters:
             netG_copied = True
         if Giter >= EMA_startIter:
             update_average(netG_test, netG, EMA)
-    
+
     Giter += 1
 
     G_growth = output_F_mean_after - output_F_mean
@@ -610,5 +634,3 @@ while epoch <= epochs and Giter <= Giters:
 
     if Giter % save_ckpt_freq == 0:
         save_checkpoint(checkpoint_path, epoch, Giter)
-
-

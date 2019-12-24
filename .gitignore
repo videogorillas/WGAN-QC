@@ -1,0 +1,6 @@
+.idea/
+dataroot/
+models/__pycache__
+outputs/images/
+__pycache__/
+outputs/log.txt
