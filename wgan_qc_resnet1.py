@@ -21,7 +21,10 @@ from cvxopt import matrix, spmatrix, sparse, solvers
 import numpy as np
 from copy import deepcopy
 
+from visdom import Visdom
+
 import models.resnet1 as resnet
+from torch import tensor as tt
 
 ####################################################################################
 # WGAN-QC (Wasserstein GANs with Quadratic Transport Cost)
@@ -74,6 +77,7 @@ parser.add_argument('--genImg_num', type=int, default=64, help='number of genera
 parser.add_argument('--genImg_freq', type=int, default=500, help='generate image frequency')
 parser.add_argument('--save_ckpt_freq', type=int, default=10000, help='save checkpoint frequency')
 parser.add_argument('--save_ckpt_epoch_freq', type=int, default=10, help='save checkpoint in how many epochs')
+parser.add_argument('--visdom_host', default="http://localhost", help='visdom host')
 
 args = parser.parse_args()
 print(args)
@@ -469,12 +473,35 @@ def save_checkpoint(checkpoint_path, epoch, Giter):
     torch.save(netD.state_dict(), '{0}/netD_epoch_{1}_Giter_{2}.pth'.format(checkpoint_path, epoch, Giter))
 
 
+vis = Visdom(port=8097, server=args.visdom_host)
+ZERO = torch.zeros(1).cpu()
+oL2LossD_real = dict(xlabel='minibatches', ylabel='loss', title='L2LossD_real')
+oL2LossD_fake = dict(xlabel='minibatches', ylabel='loss', title='L2LossD_fake')
+oL2LossD = dict(xlabel='minibatches', ylabel='loss', title='L2LossD')
+oRegLossD = dict(xlabel='minibatches', ylabel='loss', title='RegLossD')
+oTotalLoss = dict(xlabel='minibatches', ylabel='loss', title='TotalLoss')
+
+wL2LossD_real = vis.line(X=ZERO, Y=ZERO, opts=oL2LossD_real)
+wL2LossD_fake = vis.line(X=ZERO, Y=ZERO, opts=oL2LossD_fake)
+wL2LossD = vis.line(X=ZERO, Y=ZERO, opts=oL2LossD)
+wRegLossD = vis.line(X=ZERO, Y=ZERO, opts=oRegLossD)
+wTotalLoss = vis.line(X=ZERO, Y=ZERO, opts=oTotalLoss)
+
+visdom_windows = {}
+
+
 def save_images(img_path, real_cpu):
     real_cpu = real_cpu[:genImg_num].mul(0.5).add(0.5)
     b, c, h, w = real_cpu.shape
     if c == 11:
         for _range, name in zip(dataset.layerRanges, dataset.layerKeys):
             _real_cpu = real_cpu[:, list(range(*_range)), :, :]
+            if 'real_' + name not in visdom_windows:
+                win = vis.images(_real_cpu[0:genImg_num_sroot], opts=dict(title='real_' + name))
+                visdom_windows['real_' + name] = win
+            else:
+                win = visdom_windows['real_' + name]
+                vis.images(_real_cpu[0:genImg_num_sroot], opts=dict(title='real_' + name), win=win)
             vutils.save_image(_real_cpu, f'{img_path}/real_samples_{name}.png', nrow=genImg_num_sroot)
     else:
         vutils.save_image(real_cpu, '{0}/real_samples.png'.format(img_path), nrow=genImg_num_sroot)
@@ -488,6 +515,12 @@ def save_images(img_path, real_cpu):
         for _range, name in zip(dataset.layerRanges, dataset.layerKeys):
             _fake_data = fake.data[:, list(range(*_range)), :, :]
             vutils.save_image(_fake_data, f'{img_path}/fake_samples_{name}_{Giter}.png', nrow=genImg_num_sroot)
+            if name not in visdom_windows:
+                win = vis.images(_fake_data[0:genImg_num_sroot], opts=dict(title=name))
+                visdom_windows[name] = win
+            else:
+                win = visdom_windows[name]
+                vis.images(_fake_data[0:genImg_num_sroot], opts=dict(title=name), win=win)
     else:
         vutils.save_image(fake.data, '{0}/fake_samples_{1}.png'.format(img_path, Giter), nrow=genImg_num_sroot)
 
@@ -617,6 +650,16 @@ while epoch <= epochs and Giter <= Giters:
                 WD.item(), output_R_mean.item(), output_F_mean.item(), G_growth.item(),
                 L2LossD_real.item(), L2LossD_fake.item(),
                 L2LossD.item(), RegLossD.item(), TotalLoss.item())
+            vis.line(X=tt([Giter]), Y=tt([L2LossD_real.item()]).cpu(), win=wL2LossD_real, update='append',
+                     opts=oL2LossD_real)
+            vis.line(X=tt([Giter]), Y=tt([L2LossD_fake.item()]).cpu(), win=wL2LossD_fake, update='append',
+                     opts=oL2LossD_fake)
+            vis.line(X=tt([Giter]), Y=tt([L2LossD.item()]).cpu(), win=wL2LossD, update='append', opts=oL2LossD)
+            vis.line(X=tt([Giter]), Y=tt([RegLossD.item()]).cpu(), win=wRegLossD, update='append',
+                     opts=oRegLossD)
+            vis.line(X=tt([Giter]), Y=tt([TotalLoss.item()]).cpu(), win=wTotalLoss, update='append',
+                     opts=oTotalLoss)
+
         else:
             log_str = '[{:d}/{:d}][{:d}] | WD {:.9f} | real_mean {:.9f} | fake_mean {:.9f} | G_growth {:.9f} | ' \
                       'L2LossD_real {:.9f} | L2LossD_fake {:.9f} | ' \
