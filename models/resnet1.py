@@ -44,6 +44,7 @@ class ResNet_G(nn.Module):
 
         self.noise2resnet = nn.Conv2d(zchannels, self.nf0, kernel_size=3, padding=1)
         self.noise2resnet_bn = nn.BatchNorm2d(self.nf0)
+        self.noise2resnet_act = nn.LeakyReLU()
 
         self.resnet = nn.Sequential(*blocks)
         self.conv_img = nn.Conv2d(nf, outchannels, 3, padding=1)
@@ -51,6 +52,7 @@ class ResNet_G(nn.Module):
     def forward(self, z):
         out = self.noise2resnet(z)
         out = self.noise2resnet_bn(out)
+        out = self.noise2resnet_act(out)
 
         out = self.resnet(out)
 
